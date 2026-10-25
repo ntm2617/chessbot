@@ -11,7 +11,7 @@ import re
 # White pieces are on ranks 1-4  -> Handled by White Robot (UR10e(1))
 # Black pieces are on ranks 5-8  -> Handled by Black Robot (UR10e)
 move_queue = [
-    ("e8", "a1"),   # Black test move
+    ("h8", "a1", "a1"),   # Black test move
     # ("e2", "e4"), # White move
     # ("e7", "e5"), # Black move
 ]
@@ -27,6 +27,11 @@ Z_CLEAR  = 0.30        # High overhead clearance (lifts piece 7cm above all pawn
 A1_X, A1_Y = -0.41, 0.38
 H8_X, H8_Y = -1.15, -0.38
 
+# --- Global Graveyard & Discard Positions (OUTSIDE the function) ---
+GRAVEYARD_BLACK = np.array([0.19, 0.02])  # Side of board for Black robot
+GRAVEYARD_WHITE = np.array([-1.77,  0.02])  # Side of board for White robot
+discard_count = 0
+
 def square_to_world(square_str):
     """Calculates the exact (X, Y) world coordinates of any square a1 to h8."""
     sq = square_str.strip().lower()
@@ -36,7 +41,7 @@ def square_to_world(square_str):
     x = A1_X + (col / 7.0) * (H8_X - A1_X)
     y = A1_Y + (row / 7.0) * (H8_Y - A1_Y)
     return np.array([x, y])
-
+    
 def get_piece_touch_z(square_str):
     """Returns the exact top touchdown height for each piece type in Webots."""
     sq = square_str.strip().lower()
@@ -244,12 +249,18 @@ def write_turn(idx):
     except Exception:
         pass
 
-
 # ==============================================================================
 # 6. MAIN SIMULATION LOOP (Dynamic Dual-Robot Pick-and-Place State Machine)
 # ==============================================================================
 stage = "STARTUP_LIFT"
 state_start_time = 0.0
+
+elim_travel_angles = None
+elim_clear_angles  = None
+elim_touch_angles  = None
+discard_travel_angles = None
+discard_clear_angles  = None
+discard_touch_angles  = None
 
 flight_to_face = 5.5
 flight_to_pick = 3.5
@@ -287,12 +298,16 @@ while robot.step(timestep) != -1:
     elif stage == "IDLE":
         turn_idx = read_turn()
         if turn_idx < len(move_queue):
-            src_str, dst_str = move_queue[turn_idx]
+            move_entry = move_queue[turn_idx]
+            src_str = move_entry[0]
+            dst_str = move_entry[1]
+            elim_str = move_entry[2] if len(move_entry) > 2 else None
+
             if is_my_move(src_str):
                 # My turn!
                 current_move_idx = turn_idx
-                current_move = (src_str, dst_str)
-                print(f"\n[{role_str}] >>> Executing Move #{turn_idx + 1}: {src_str.upper()} -> {dst_str.upper()} <<<")
+                current_move = move_entry
+                print(f"\n[{role_str}] >>> Executing Move #{turn_idx + 1}: {src_str.upper()} -> {dst_str.upper()}" + (f" (Capturing {elim_str.upper()})" if elim_str else "") + " <<<")
 
                 src_xy = square_to_world(src_str)
                 dst_xy = square_to_world(dst_str)
@@ -305,7 +320,23 @@ while robot.step(timestep) != -1:
                 src_touch_z = piece_z
                 dst_place_z = piece_z   # Holds the exact same piece, so placing height is identical!
 
-                # Solve all waypoints with crane orientation (tool pointing straight down):
+                # Check if this move requires an elimination first:
+                if elim_str:
+                    elim_xy = square_to_world(elim_str)
+                    elim_touch_z = get_piece_touch_z(elim_str)
+                    discard_xy = (GRAVEYARD_WHITE if is_white_robot else GRAVEYARD_BLACK) + np.array([0.0, discard_count * 0.07])
+                    
+                    # 1. Elimination pick waypoints:
+                    elim_touch_angles     = solve_waypoint(elim_xy, elim_touch_z, ik_guess)
+                    elim_clear_angles     = solve_waypoint(elim_xy, Z_CLEAR, elim_touch_angles)
+                    elim_travel_angles    = solve_waypoint(elim_xy, Z_TRAVEL, elim_clear_angles)
+                    
+                    # 2. Elimination discard (off-board) waypoints:
+                    discard_travel_angles = solve_waypoint(discard_xy, Z_TRAVEL, ik_guess)
+                    discard_clear_angles  = solve_waypoint(discard_xy, Z_CLEAR, discard_travel_angles)
+                    discard_touch_angles  = solve_waypoint(discard_xy, elim_touch_z, discard_clear_angles)
+
+                # Solve standard move waypoints (as usual):
                 src_touch_angles  = solve_waypoint(src_xy, src_touch_z, ik_guess)
                 src_clear_angles  = solve_waypoint(src_xy, Z_CLEAR, src_touch_angles)     # 0.38m vertical
                 src_travel_angles = solve_waypoint(src_xy, Z_TRAVEL, src_clear_angles)    # 0.50m cruise
@@ -331,9 +362,98 @@ while robot.step(timestep) != -1:
         stage = "PAUSE_FACING_BOARD"
         state_start_time = now
 
-    # Step 0c: After 0.5s pause, fly up to overhead piece at 0.50m cruise height
     elif stage == "PAUSE_FACING_BOARD" and (now - state_start_time) >= 0.5:
-        flight_to_pick = calc_duration(FACE_BOARD_POSTURE, src_travel_angles)
+        if elim_str:
+            # Step A: Fly to the piece to be eliminated first!
+            flight_to_elim = calc_duration(FACE_BOARD_POSTURE, elim_travel_angles)
+            print(f"[{role_str}] [ELIMINATE] Flying to {elim_str.upper()} to remove piece ({flight_to_elim:.1f}s)...")
+            set_arm_angles(elim_travel_angles)
+            stage = "ELIM_APPROACH_CRUISE"
+            state_start_time = now
+        else:
+            # No elimination needed -> Go directly to pick source piece
+            flight_to_pick = calc_duration(FACE_BOARD_POSTURE, src_travel_angles)
+            print(f"[{role_str}] Launching to {src_str.upper()} at {Z_TRAVEL}m ({flight_to_pick:.1f}s)...")
+            set_arm_angles(src_travel_angles)
+            stage = "APPROACH_CRUISE"
+            state_start_time = now
+        # --- ELIMINATION PROCESS ---
+    # 1. Lower vertically over the captured piece
+    elif stage == "ELIM_APPROACH_CRUISE" and (now - state_start_time) >= flight_to_elim:
+        flight_clear = calc_duration(elim_travel_angles, elim_clear_angles)
+        set_arm_angles(elim_clear_angles)
+        stage = "ELIM_APPROACH_CLEAR"
+        state_start_time = now
+
+    # 2. Descend to touch the piece (suction off)
+    elif stage == "ELIM_APPROACH_CLEAR" and (now - state_start_time) >= flight_clear:
+        grip_off()
+        flight_touch = calc_duration(elim_clear_angles, elim_touch_angles)
+        set_arm_angles(elim_touch_angles)
+        stage = "ELIM_TOUCH_DESCEND"
+        state_start_time = now
+
+    # 3. Lock suction onto the captured piece
+    elif stage == "ELIM_TOUCH_DESCEND" and (now - state_start_time) >= flight_touch:
+        grip_on()
+        stage = "ELIM_SUCTION"
+        state_start_time = now
+
+    # 4. Lift vertically to 0.30m
+    elif stage == "ELIM_SUCTION" and (now - state_start_time) >= 1.0:
+        flight_lift_clear = calc_duration(elim_touch_angles, elim_clear_angles)
+        set_arm_angles(elim_clear_angles)
+        stage = "ELIM_LIFT_CLEAR"
+        state_start_time = now
+
+    # 5. Rise to 0.50m cruise height
+    elif stage == "ELIM_LIFT_CLEAR" and (now - state_start_time) >= flight_lift_clear:
+        flight_lift_travel = calc_duration(elim_clear_angles, elim_travel_angles)
+        set_arm_angles(elim_travel_angles)
+        stage = "ELIM_LIFT_CRUISE"
+        state_start_time = now
+
+    # 6. Transfer high at 0.50m to the discard graveyard off the board
+    elif stage == "ELIM_LIFT_CRUISE" and (now - state_start_time) >= flight_lift_travel:
+        flight_discard = calc_duration(elim_travel_angles, discard_travel_angles)
+        print(f"[{role_str}] [ELIMINATE] Taking piece off board to graveyard ({flight_discard:.1f}s)...")
+        set_arm_angles(discard_travel_angles)
+        stage = "ELIM_TRANSFER"
+        state_start_time = now
+
+    # 7. Overhead graveyard at 0.50m -> lower to 0.30m
+    elif stage == "ELIM_TRANSFER" and (now - state_start_time) >= flight_discard:
+        flight_d_clear = calc_duration(discard_travel_angles, discard_clear_angles)
+        set_arm_angles(discard_clear_angles)
+        stage = "ELIM_STAGE_CLEAR"
+        state_start_time = now
+
+    # 8. Lower to table surface
+    elif stage == "ELIM_STAGE_CLEAR" and (now - state_start_time) >= flight_d_clear:
+        flight_d_touch = calc_duration(discard_clear_angles, discard_touch_angles)
+        set_arm_angles(discard_touch_angles)
+        stage = "ELIM_TOUCH_PLACE"
+        state_start_time = now
+
+    # 9. Release piece in graveyard
+    elif stage == "ELIM_TOUCH_PLACE" and (now - state_start_time) >= flight_d_touch:
+        grip_off()
+        discard_count += 1
+        print(f"[{role_str}] [ELIMINATE] Piece discarded! Starting normal move...")
+        stage = "ELIM_RELEASE"
+        state_start_time = now
+
+    # 10. Retract up to 0.50m and transition seamlessly into normal pick move!
+    elif stage == "ELIM_RELEASE" and (now - state_start_time) >= 0.5:
+        flight_retract = calc_duration(discard_touch_angles, discard_travel_angles)
+        set_arm_angles(discard_travel_angles)
+        stage = "ELIM_RETRACT"
+        state_start_time = now
+
+    # 11. Now proceed with the exact same normal move as always!
+    elif stage == "ELIM_RETRACT" and (now - state_start_time) >= flight_retract:
+        elim_str = None  # Elimination finished!
+        flight_to_pick = calc_duration(discard_travel_angles, src_travel_angles)
         print(f"[{role_str}] Launching to {src_str.upper()} at {Z_TRAVEL}m ({flight_to_pick:.1f}s)...")
         set_arm_angles(src_travel_angles)
         stage = "APPROACH_CRUISE"
