@@ -11,14 +11,14 @@ import re
 # White pieces are on ranks 1-4  -> Handled by White Robot (UR10e(1))
 # Black pieces are on ranks 5-8  -> Handled by Black Robot (UR10e)
 move_queue = [
-    ("a1", "a6"),   # Black test move
+    ("e8", "a1"),   # Black test move
     # ("e2", "e4"), # White move
     # ("e7", "e5"), # Black move
 ]
 
 # Height settings:
 Z_TRAVEL = 0.50        # High cruise height across board
-Z_CLEAR  = 0.38        # High overhead clearance (lifts piece 7cm above all pawn heads)
+Z_CLEAR  = 0.30        # High overhead clearance (lifts piece 7cm above all pawn heads)
 
 
 # ==============================================================================
@@ -51,7 +51,6 @@ def get_piece_touch_z(square_str):
         return 0.178  # Kings
     else:
         return 0.165  # Bishops, Rooks, Queens
-
 
 # ==============================================================================
 # 3. ROBOT & VACUUM GRIPPER INITIALIZATION
@@ -106,11 +105,27 @@ def calc_duration(angles_a, angles_b, v=0.35):
     diffs = [abs(x - y) for x, y in zip(a, b)]
     return (max(diffs) / v) + 0.8
 
-def set_arm_angles(angles):
-    """Sets joint targets for all 6 arm motors."""
+# Replace lines 108-112 with:
+current_arm_angles = [-1.571, -1.189, 1.805, 0.955, 1.571, 0.0]
+
+def set_arm_angles(angles, v=0.35):
+    """Sets joint targets with synchronized speeds so all joints move together without sagging in mid-air."""
+    global current_arm_angles
     target = angles[1:7] if len(angles) > 6 else angles
-    for motor, angle in zip(arm_motors, target):
-        motor.setPosition(angle)
+    diffs = [abs(t - c) for t, c in zip(target, current_arm_angles)]
+    max_diff = max(diffs)
+    
+    if max_diff > 1e-4:
+        for motor, target_val, diff in zip(arm_motors, target, diffs):
+            motor_v = max(0.02, v * (diff / max_diff))
+            motor.setVelocity(motor_v)
+            motor.setPosition(target_val)
+    else:
+        for motor, target_val in zip(arm_motors, target):
+            motor.setVelocity(v)
+            motor.setPosition(target_val)
+            
+    current_arm_angles = list(target)
 
 # Vacuum gripper device
 vacuum = robot.getDevice("vacuum gripper")
@@ -132,7 +147,7 @@ grip_off()
 
 # Universal Postures:
 # Default resting posture (as usual, arm folded alongside pedestal):
-DEFAULT_PARK_POSTURE = [0.0, -1.189, 1.805, 0.955, 1.571, 0.0]
+DEFAULT_PARK_POSTURE = [-1.571, -1.189, 1.805, 0.955, 1.571, 0.0]
 # Board-facing crane posture (Pan +1.571 turns arm to face directly into the chessboard):
 FACE_BOARD_POSTURE   = [1.571, -1.189, 1.805, 0.955, 1.571, 0.0]
 
@@ -160,10 +175,10 @@ arm_chain.active_links_mask = [
     link.name in set(arm_motor_names) for link in arm_chain.links
 ]
 
+# Around lines 162-165:
 # Prevent flat pose (keeps elbow bent upward in clean crane mode)
 arm_chain.links[2].bounds = (-2.8, 0.0)
 arm_chain.links[3].bounds = (0.1, 2.8)
-
 # Enforce exact base position and rotation
 self_node = robot.getSelf()
 if self_node:
@@ -285,9 +300,10 @@ while robot.step(timestep) != -1:
                 ik_guess = [0.0] * len(arm_chain.links)
                 ik_guess[1:7] = FACE_BOARD_POSTURE
 
-                # Exact touchdown Z calibrated for piece top:
-                src_touch_z = get_piece_touch_z(src_str)
-                dst_place_z = src_touch_z
+                # Get the exact piece height:
+                piece_z = get_piece_touch_z(src_str)
+                src_touch_z = piece_z
+                dst_place_z = piece_z   # Holds the exact same piece, so placing height is identical!
 
                 # Solve all waypoints with crane orientation (tool pointing straight down):
                 src_touch_angles  = solve_waypoint(src_xy, src_touch_z, ik_guess)
@@ -297,7 +313,7 @@ while robot.step(timestep) != -1:
                 dst_travel_angles = solve_waypoint(dst_xy, Z_TRAVEL, ik_guess)             # 0.50m destination
                 dst_clear_angles  = solve_waypoint(dst_xy, Z_CLEAR, dst_travel_angles)    # 0.38m staging
                 dst_touch_angles  = solve_waypoint(dst_xy, dst_place_z, dst_clear_angles) # touchdown flat on board
-
+                
                 flight_travel_to_clear = calc_duration(src_travel_angles, src_clear_angles)
                 flight_clear_to_touch  = calc_duration(src_clear_angles, src_touch_angles)
 
@@ -330,18 +346,16 @@ while robot.step(timestep) != -1:
         stage = "APPROACH_CLEAR"
         state_start_time = now
 
-    # Step 1b: Drop straight down onto piece head with SUCTION OFF (prevents oblique grabbing!)
+    # 1. Lower onto piece head with SUCTION OFF
     elif stage == "APPROACH_CLEAR" and (now - state_start_time) >= flight_travel_to_clear:
-        print(f"[{role_str}] Lowering flush onto piece at {src_touch_z}m (suction off)...")
-        grip_off()
+        grip_off()                              # Keep suction OFF while descending!
         set_arm_angles(src_touch_angles)
         stage = "TOUCH_DESCEND"
         state_start_time = now
 
-    # Step 1c: Suction cup is now resting flush and flat on piece head. NOW engage suction!
+    # 2. Suction cup has landed flat and flush. NOW turn suction ON!
     elif stage == "TOUCH_DESCEND" and (now - state_start_time) >= flight_clear_to_touch:
-        print(f"[{role_str}] [+] Suction cup seated flat (0.0° tilt). Engaging vacuum...")
-        grip_on()
+        grip_on()                               # Turn suction ON only when seated flat!
         stage = "TOUCH_PICK"
         state_start_time = now
 
@@ -367,56 +381,49 @@ while robot.step(timestep) != -1:
         stage = "LIFT_CRUISE"
         state_start_time = now
 
-    # Step 4: Transfer across the board maintaining 0.50m height
+    # Step 4: Fly high across board maintaining 0.50m (no mid-air sag!)
     elif stage == "LIFT_CRUISE" and (now - state_start_time) >= flight_travel_to_clear:
         transfer_duration = calc_duration(src_travel_angles, dst_travel_angles)
-        print(f"[{role_str}] Transferring at {Z_TRAVEL}m to {dst_str.upper()} ({transfer_duration:.1f}s)...")
+        print(f"[{role_str}] Transferring high at {Z_TRAVEL}m to {dst_str.upper()} ({transfer_duration:.1f}s)...")
         set_arm_angles(dst_travel_angles)
         stage = "TRANSFER"
         state_start_time = now
 
-    # Step 5a: Arrived overhead at destination at 0.50m; lower to 0.38m first
+    # Step 5: Arrived directly overhead at destination at 0.50m -> Drop down to 0.30m
     elif stage == "TRANSFER" and (now - state_start_time) >= transfer_duration:
-        print(f"[{role_str}] Overhead at {dst_str.upper()}. Lowering to {Z_CLEAR}m...")
-        flight_travel_to_clear = calc_duration(dst_travel_angles, dst_clear_angles)
+        flight_clear_duration = calc_duration(dst_travel_angles, dst_clear_angles)
+        print(f"[{role_str}] Overhead at {dst_str.upper()}. Dropping to {Z_CLEAR}m ({flight_clear_duration:.1f}s)...")
         set_arm_angles(dst_clear_angles)
         stage = "STAGE_CLEAR"
         state_start_time = now
 
-    # Step 5b: Lower piece gently to board surface with 0.0° tilt
-    elif stage == "STAGE_CLEAR" and (now - state_start_time) >= flight_travel_to_clear:
-        flight_clear_to_touch = calc_duration(dst_clear_angles, dst_touch_angles)
-        print(f"[{role_str}] Placing piece gently at {dst_place_z}m...")
+    # Step 6: Arrived at 0.30m -> Drop down to 0.15m (or piece touch height) to place
+    elif stage == "STAGE_CLEAR" and (now - state_start_time) >= flight_clear_duration:
+        flight_touch_duration = calc_duration(dst_clear_angles, dst_touch_angles)
+        print(f"[{role_str}] Lowering to place on board at {dst_place_z:.3f}m ({flight_touch_duration:.1f}s)...")
         set_arm_angles(dst_touch_angles)
         stage = "TOUCH_PLACE"
         state_start_time = now
 
-    # Step 6: Piece is flush on the board surface. Release vacuum!
-    elif stage == "TOUCH_PLACE" and (now - state_start_time) >= flight_clear_to_touch:
-        grip_off()
-        print(f"[{role_str}] [-] Vacuum OFF: Piece placed cleanly with 0.0° tilt.")
+    # Step 7: Piece is sitting flat on the board surface: turn vacuum OFF
+    elif stage == "TOUCH_PLACE" and (now - state_start_time) >= flight_touch_duration:
+        grip_off()                              # Cut suction!
+        print(f"[{role_str}] Placed piece. Releasing vacuum suction...")
         stage = "RELEASE"
         state_start_time = now
 
-    # Step 7: Retract straight back up to 0.38m
+    # Step 8: Wait 0.5s for air pressure to release, then retract vertically back to 0.30m
     elif stage == "RELEASE" and (now - state_start_time) >= 0.5:
-        print(f"[{role_str}] Retracting straight up to {Z_CLEAR}m...")
-        set_arm_angles(dst_clear_angles)
+        flight_retract_duration = calc_duration(dst_touch_angles, dst_clear_angles)
+        print(f"[{role_str}] Retracting vertically back to {Z_CLEAR}m...")
+        set_arm_angles(dst_clear_angles)        # Retract vertically
         stage = "RETRACT"
         state_start_time = now
 
-    # Step 8: Return smoothly to default parked posture
-    elif stage == "RETRACT" and (now - state_start_time) >= flight_clear_to_touch:
+    # Step 9: Return smoothly to default parked posture
+    elif stage == "RETRACT" and (now - state_start_time) >= flight_retract_duration:
         flight_to_park = calc_duration(dst_clear_angles, DEFAULT_PARK_POSTURE)
         print(f"[{role_str}] Returning to default parked posture ({flight_to_park:.1f}s)...")
         set_arm_angles(DEFAULT_PARK_POSTURE)
         stage = "RETURN"
         state_start_time = now
-
-    # Step 9: Complete move and advance turn
-    elif stage == "RETURN" and (now - state_start_time) >= flight_to_park:
-        print(f"[{role_str}] [✓] Move #{current_move_idx + 1} {src_str.upper()} -> {dst_str.upper()} Complete!\n")
-        write_turn(current_move_idx + 1)
-        current_move = None
-        current_move_idx = None
-        stage = "IDLE"
