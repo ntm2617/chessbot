@@ -33,58 +33,7 @@ The robots use vacuum suction grippers to pick up pieces, carry them across the 
 
 ## 🔄 How the Whole Process Works (Flowchart)
 
-```mermaid
-flowchart TD
-    %% 1. Startup
-    Start(["Start Simulation"]) --> Setup["Initialize Webots & Arm Motors<br/>Identify Role: White Robot or Black Robot"]
-    Setup --> Park["Fold Arms Backward (-1.571 rad)<br/>Safe Parking Pose (Clear of Board)"]
-    Park --> Idle["IDLE Stage<br/>Listening for moves from Vision / AI"]
-
-    %% 2. Receiving
-    Idle --> Listen{"New Move Command Received?<br/>(e.g., 'e2 to e4' or 'e4 takes d5')"}
-    Listen -- "No" --> Idle
-    Listen -- "Yes" --> CheckPartner{"Is the other robot moving?"}
-    CheckPartner -- "Yes (Busy)" --> WaitPartner["Wait safely in IDLE"] --> CheckPartner
-    CheckPartner -- "No (Clear)" --> StartMove["Claim Turn & Set Status: BUSY"]
-
-    %% 3. Planning
-    StartMove --> Plan["Look up Piece Height on Square<br/>Calculate 3D Coordinates (X, Y, Z)<br/>Solve Motor Angles (Inverse Kinematics)"]
-    Plan --> FaceBoard["Swing Arm Forward to Face Chessboard<br/>Hold 0.5s to stabilize"]
-
-    %% 4. Decision: Capture or Normal?
-    FaceBoard --> IsCapture{"Is this a Capture Move?"}
-
-    %% 4A. Elimination
-    subgraph Elimination_SubProcess ["Capture / Elimination Step"]
-        IsCapture -- "Yes" --> FlyEnemy["Fly high at 0.50m directly over Enemy Piece"]
-        FlyEnemy --> DropEnemy["Drop down like an elevator & turn Suction ON"]
-        DropEnemy --> LiftEnemy["Lift enemy piece straight up to 0.50m"]
-        LiftEnemy --> DiscardEnemy["Fly off the board to Table Graveyard"]
-        DiscardEnemy --> PlaceGraveyard["Lower piece to table & turn Suction OFF"]
-        PlaceGraveyard --> RetractGraveyard["Retract arm back up to 0.50m"]
-    end
-
-    %% 4B. Normal Move
-    IsCapture -- "No" --> FlySource["Fly high at 0.50m directly over My Piece"]
-    RetractGraveyard --> FlySource
-
-    subgraph Normal_Move_Process ["Standard Move Step"]
-        FlySource --> DropSource["Drop straight down to 0.30m, then touch piece"]
-        DropSource --> GripPiece["Turn Suction ON & Confirm Vacuum Seal"]
-        GripPiece --> LiftHigh["Lift piece straight up to 0.50m cruise height"]
-        LiftHigh --> Transfer["Transfer across the board at 0.50m<br/>(Synchronized speeds: NO mid-air dipping!)"]
-        Transfer --> ArriveDest["Arrive directly overhead Destination Square"]
-        ArriveDest --> DropDest1["Elevator Step 1: Lower to 0.30m staging height"]
-        DropDest1 --> DropDest2["Elevator Step 2: Lower gently to board surface"]
-        DropDest2 --> ReleasePiece["Turn Suction OFF & Wait 0.5s for pressure drop"]
-        ReleasePiece --> RetractUp["Retract straight up to 0.30m"]
-    end
-
-    %% 5. Finish
-    RetractUp --> ReturnHome["Swing arm backward to Parking Posture"]
-    ReturnHome --> Finish["Update Piece Position in Memory<br/>Signal Status: READY for next move"]
-    Finish --> Idle
-```
+<img width="1373" height="2839" alt="mermaid-diagram" src="https://github.com/user-attachments/assets/4f52cc8b-6438-4002-959e-233171ccecb6" />
 
 ---
 
