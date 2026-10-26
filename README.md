@@ -1,4 +1,3 @@
-
 ---
 
 # 🤖 Dual-Robot Collaborative Chess Simulation in Webots
@@ -25,63 +24,7 @@ An autonomous multi-robot chess simulation built with **Cyberbotics Webots**, fe
 
 The following state machine governs the behavior of both robots:
 
-```mermaid
-flowchart TD
-    %% Global & Init
-    Start(["Simulation Start"]) --> Init["Initialize Webots Robot / Supervisor<br/>Detect Role: White (Ranks 1-4) or Black (Ranks 5-8)"]
-    Init --> IK_Setup["Export Robot URDF & Build IK Chain (ikpy)<br/>Enforce Crane Bounds: Shoulder (-2.8, 0.0), Elbow (0.1, 2.8)"]
-    IK_Setup --> ParkStartup["STARTUP_LIFT -> STARTUP_PAN<br/>Swing arms backward to DEFAULT_PARK_POSTURE (-1.571 rad)"]
-    ParkStartup --> Idle["IDLE Stage<br/>Read shared_turn.txt"]
-
-    %% Turn Check
-    Idle --> TurnCheck{"Is it my turn?<br/>(is_my_move)"}
-    TurnCheck -- "No" --> Idle
-    TurnCheck -- "Yes" --> SolveWaypoints["Calculate World (X, Y) Coordinates<br/>Lookup Piece Top Z Heights<br/>Solve IK Waypoints at 0.50m, 0.30m & Touch Z"]
-
-    SolveWaypoints --> SwingFace["SWING_TO_BOARD<br/>Rotate arm to face board (+1.571 rad)"]
-    SwingFace --> PauseFace["PAUSE_FACING_BOARD<br/>Hold 0.5s for stabilization"]
-
-    %% Elimination Branch
-    PauseFace --> ElimCheck{"Does move require<br/>Elimination first?<br/>(elim_str is not None)"}
-
-    %% Elimination Sub-flow
-    subgraph Elimination_Process ["1. Capture / Elimination Sub-Process"]
-        ElimCheck -- "Yes" --> Elim_Fly["ELIM_APPROACH_CRUISE: Fly over enemy piece at 0.50m"]
-        Elim_Fly --> Elim_Clear["ELIM_APPROACH_CLEAR: Drop to 0.30m staging"]
-        Elim_Clear --> Elim_Touch["ELIM_TOUCH_DESCEND: Touch piece (suction OFF)"]
-        Elim_Touch --> Elim_Grip["ELIM_SUCTION: Turn suction ON & confirm seal"]
-        Elim_Grip --> Elim_LiftClear["ELIM_LIFT_CLEAR: Lift straight up to 0.30m"]
-        Elim_LiftClear --> Elim_LiftCruise["ELIM_LIFT_CRUISE: Rise to 0.50m cruise altitude"]
-        Elim_LiftCruise --> Elim_Transfer["ELIM_TRANSFER: Fly across board at 0.50m to Graveyard"]
-        Elim_Transfer --> Elim_DropClear["ELIM_STAGE_CLEAR: Drop to 0.30m overhead graveyard"]
-        Elim_DropClear --> Elim_Place["ELIM_TOUCH_PLACE: Lower to table surface"]
-        Elim_Place --> Elim_Release["ELIM_RELEASE: Cut suction & increment discard_count"]
-        Elim_Release --> Elim_Retract["ELIM_RETRACT: Retract vertically back to 0.50m"]
-    end
-
-    %% Normal Move Process
-    ElimCheck -- "No (Normal Move)" --> Normal_Fly["APPROACH_CRUISE: Fly overhead Source Piece at 0.50m"]
-    Elim_Retract --> Normal_Fly
-
-    subgraph Normal_Move_Process ["2. Standard Pick & Place Process"]
-        Normal_Fly --> Norm_Clear["APPROACH_CLEAR: Lower to 0.30m staging"]
-        Norm_Clear --> Norm_Touch["TOUCH_DESCEND: Lower onto piece head (suction OFF)"]
-        Norm_Touch --> Norm_Pick["TOUCH_PICK: Turn suction ON when seated flat"]
-        Norm_Pick --> Norm_Seal["SUCTION: Verify vacuum seal"]
-        Norm_Seal --> Norm_LiftClear["LIFT_CLEAR: Lift vertically to 0.30m"]
-        Norm_LiftClear --> Norm_LiftCruise["LIFT_CRUISE: Rise to 0.50m cruise altitude"]
-        Norm_LiftCruise --> Norm_Transfer["TRANSFER: Fly high at 0.50m with Synchronized Speeds<br/>(No mid-air sag!)"]
-        Norm_Transfer --> Norm_StageClear["STAGE_CLEAR: Arrived overhead target square -> Drop to 0.30m"]
-        Norm_StageClear --> Norm_Place["TOUCH_PLACE: Lower gently to board (0.15m - 0.17m)"]
-        Norm_Place --> Norm_Release["RELEASE: Turn suction OFF & wait 0.5s for pressure release"]
-        Norm_Release --> Norm_Retract["RETRACT: Retract straight up to 0.30m"]
-    end
-
-    %% Return & Advance Turn
-    Norm_Retract --> ReturnPark["RETURN<br/>Swing smoothly back to backward DEFAULT_PARK_POSTURE"]
-    ReturnPark --> AdvanceTurn["Write Next Turn to shared_turn.txt<br/>(Turn + 1)"]
-    AdvanceTurn --> Idle
-```
+<img width="1044" height="3405" alt="mermaid-diagram" src="https://github.com/user-attachments/assets/6baaec4e-1ced-4d9d-8ab0-1e15dd17ba8f" />
 
 ---
 
@@ -102,6 +45,7 @@ my_first_simulation/
 │   └── textures/                  # Textures for chessboard and table
 └── README.md
 ```
+
 
 ---
 
